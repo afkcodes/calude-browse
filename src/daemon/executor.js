@@ -88,3 +88,16 @@ export async function ensureInView(client, model, el) {
   await sleep(400);
   return true; // signal caller to re-perceive
 }
+
+// Clear the currently-focused field (select-all + delete). Used before typing
+// so a (re)type REPLACES rather than appends — fixes garble on verify-retry.
+export async function clearField(client) {
+  const { Input } = client;
+  const a = { key: "a", code: "KeyA", windowsVirtualKeyCode: 65 };
+  await Input.dispatchKeyEvent({ type: "keyDown", modifiers: 2, ...a }); // modifiers:2 = Ctrl
+  await Input.dispatchKeyEvent({ type: "keyUp", modifiers: 2, ...a });
+  const del = { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 };
+  await Input.dispatchKeyEvent({ type: "keyDown", ...del });
+  await Input.dispatchKeyEvent({ type: "keyUp", ...del });
+  await sleep(30);
+}

@@ -184,7 +184,9 @@ knows to take another approach rather than assuming success.
 5. ~~Drag-and-drop~~ ✓ — trusted humanized drag for reorder/DnD.
 6. ~~Coordinate-click fallback + unnamed-toggle perception~~ ✓ — `browser_click_xy`.
 7. ~~Multi-target / popup + new-tab following~~ ✓ — auto-focus, list/switch/close tabs.
-8. Planner/executor split for long-horizon tasks; native HTML5 drag events.
+8. ~~Connection auto-recovery~~ ✓ — `ensure()` health-checks the socket; relaunches/re-attaches on a dropped connection.
+9. ~~Type replaces, not appends~~ ✓ — `clearField()` before typing (fixes retry garble).
+10. iframe / shadow-DOM perception; OS-level input "takeover"; planner/executor split; native HTML5 drag.
 5. OS-level input escalation ("takeover mode") for the hardest anti-bot walls.
 6. iframe / shadow-DOM traversal; vision fallback for canvas/WebGL widgets.
 7. Thin MV3 extension UI talking to this daemon via native messaging.

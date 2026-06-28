@@ -39,7 +39,7 @@ async function addTarget(targetId, makeActive) {
 }
 
 export async function init() {
-  if (browser) return;
+  await shutdown(); // recovery-safe: tear down any stale connection before (re)connecting
   const { webSocketDebuggerUrl } = await CDP.Version({ port: PORT });
   browser = await CDP({ target: webSocketDebuggerUrl });
   await browser.Target.setDiscoverTargets({ discover: true });
@@ -69,6 +69,14 @@ export function active() {
   const c = clients.get(activeId);
   if (!c) throw new Error("no active browser target — call ensure()/read() first");
   return c;
+}
+
+// Is the CDP connection actually live? Cheap socket probe used for auto-recovery
+// (a dropped Chrome/socket otherwise bricks the session until an MCP reconnect).
+export async function healthy() {
+  if (!browser || !activeId || !clients.has(activeId)) return false;
+  try { await browser.Target.getTargets(); return true; }
+  catch { return false; }
 }
 
 export async function list() {

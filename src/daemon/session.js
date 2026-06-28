@@ -23,7 +23,9 @@ let replaying = false;
 const C = () => tabs.active(); // the active target's CDP client
 
 export async function ensure() {
-  if (started) return;
+  if (started && await tabs.healthy()) return;
+  // First run, or the CDP socket died (Chrome closed/crashed) — (re)launch and
+  // (re)attach so a dropped connection self-heals instead of bricking the session.
   launched = await launchChrome();
   await tabs.init();
   started = true;
@@ -95,6 +97,7 @@ async function typeVerified(match, text, submit, fallback) {
     const target = matchEl(match) || fallback;
     if (!target) return { text: "(input no longer present)" };
     await exec.click(C(), target.x, target.y);
+    await exec.clearField(C()); // replace, don't append — fixes garble on retry
     await exec.typeText(C(), text);
     if (submit) await exec.pressEnter(C());
     await sleep(900);
