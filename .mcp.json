@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "calude-browse": {
+      "command": "node",
+      "args": ["/home/ashish/projects/calude_browse/src/mcp-server.js"]
+    }
+  }
+}

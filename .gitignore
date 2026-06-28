@@ -1,0 +1,10 @@
+node_modules/
+.env
+*.log
+
+# runtime-generated state
+logs/
+pending/
+flows/
+
+/tmp/

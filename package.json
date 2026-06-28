@@ -1,0 +1,22 @@
+{
+  "name": "calude-browse",
+  "version": "0.1.0",
+  "description": "Human-like AI browser copilot — trusted CDP input + accessibility-tree perception, no screenshots.",
+  "type": "module",
+  "bin": {
+    "calude": "./src/cli.js"
+  },
+  "scripts": {
+    "task": "node src/cli.js",
+    "demo": "node src/cli.js --no-llm",
+    "mcp": "node src/mcp-server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "chrome-remote-interface": "^0.33.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
