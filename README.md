@@ -186,7 +186,8 @@ knows to take another approach rather than assuming success.
 7. ~~Multi-target / popup + new-tab following~~ ✓ — auto-focus, list/switch/close tabs.
 8. ~~Connection auto-recovery~~ ✓ — `ensure()` health-checks the socket; relaunches/re-attaches on a dropped connection.
 9. ~~Type replaces, not appends~~ ✓ — `clearField()` before typing (fixes retry garble).
-10. iframe / shadow-DOM perception; OS-level input "takeover"; planner/executor split; native HTML5 drag.
+10. ~~iframe / shadow-DOM perception~~ ✓ — recursive walk pierces same-origin iframes (with coordinate offsets) + open shadow roots.
+11. OS-level input "takeover"; planner/executor split; native HTML5 drag.
 5. OS-level input escalation ("takeover mode") for the hardest anti-bot walls.
 6. iframe / shadow-DOM traversal; vision fallback for canvas/WebGL widgets.
 7. Thin MV3 extension UI talking to this daemon via native messaging.

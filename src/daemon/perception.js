@@ -78,29 +78,54 @@ function PAGE_EXTRACTOR(maxElements) {
   const items = [];
   const seen = new Set();
   let scanned = 0;
-  for (const el of document.querySelectorAll(INTERACTIVE)) {
-    if (++scanned > 4000) break; // pathological-page guard
-    const r = el.getBoundingClientRect();
-    if (!visible(el, r)) continue;
-    const key = Math.round(r.x) + ":" + Math.round(r.y) + ":" + el.tagName;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const role = roleOf(el);
-    const name = accessibleName(el);
-    if (!name && !KEEP_UNNAMED.includes(role)) continue;
-    items.push({
-      el,
-      role,
-      name,
-      type: el.getAttribute("type") || undefined,
-      value: (el.value || "").slice(0, 80) || undefined,
-      x: Math.round(r.x + r.width / 2),
-      y: Math.round(r.y + r.height / 2),
-      w: Math.round(r.width),
-      h: Math.round(r.height),
-      pri: overlay && overlay.contains(el) ? 0 : 1,
-    });
+
+  // Recursively collect interactables across the top document, open shadow
+  // roots, and SAME-ORIGIN iframes. (ox,oy) is the frame's offset in the top
+  // viewport, so child coordinates map to where CDP Input must actually click;
+  // shadow roots share their host's coordinate space, so they inherit the
+  // parent offset. Cross-origin iframes throw on contentDocument → skipped.
+  function collect(root, ox, oy) {
+    let nodes;
+    // Walk ALL elements (not just interactive ones) so non-interactive shadow
+    // hosts (e.g. a bare <div>) and iframes are found and descended into.
+    try { nodes = root.querySelectorAll("*"); } catch { return; }
+    for (const el of nodes) {
+      if (++scanned > 8000) return; // pathological-page guard
+      if (el.shadowRoot) collect(el.shadowRoot, ox, oy); // pierce open shadow DOM
+      const tag = el.tagName;
+      if (tag === "IFRAME" || tag === "FRAME") { // descend same-origin frames
+        let doc = null;
+        try { doc = el.contentDocument; } catch { doc = null; } // cross-origin → null
+        if (doc) { const fr = el.getBoundingClientRect(); collect(doc, ox + fr.left, oy + fr.top); }
+        continue;
+      }
+      let interactive = false;
+      try { interactive = el.matches(INTERACTIVE); } catch {}
+      if (!interactive) continue;
+      const rr = el.getBoundingClientRect();
+      const r = {
+        x: rr.x + ox, y: rr.y + oy, left: rr.left + ox, top: rr.top + oy,
+        right: rr.right + ox, bottom: rr.bottom + oy, width: rr.width, height: rr.height,
+      };
+      if (!visible(el, r)) continue;
+      const key = Math.round(r.x) + ":" + Math.round(r.y) + ":" + el.tagName;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const role = roleOf(el);
+      const name = accessibleName(el);
+      if (!name && !KEEP_UNNAMED.includes(role)) continue;
+      items.push({
+        el, role, name,
+        type: el.getAttribute("type") || undefined,
+        value: (el.value || "").slice(0, 80) || undefined,
+        x: Math.round(r.x + r.width / 2),
+        y: Math.round(r.y + r.height / 2),
+        w: Math.round(r.width), h: Math.round(r.height),
+        pri: overlay && overlay.contains(el) ? 0 : 1,
+      });
+    }
   }
+  collect(document, 0, 0);
 
   // Overlay contents first. Array.sort is stable, so DOM order is preserved
   // within each priority band.
