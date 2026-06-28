@@ -1,0 +1,137 @@
+---
+name: calude-browse
+description: >-
+  Drive a real Chrome browser like a human via the calude-browse MCP server —
+  trusted input + accessibility-tree perception (no screenshots), with popups,
+  tabs, iframes and shadow DOM all handled. Use this skill WHENEVER the user
+  wants to control, automate, or act inside a real web browser: clicking through
+  a site, filling/submitting forms, operating a logged-in dashboard (GA4, Search
+  Console, Cloudflare, Stripe, admin panels, CMS), reordering lists, multi-tab or
+  OAuth-popup flows, or recording a repeatable browser task — even if they don't
+  say "calude-browse", "MCP", or "browser automation". Also use it when asked to
+  read a page's interactive elements, run a saved browser flow, or "do X in the
+  browser for me". NOT for scraping static HTML (use fetch/curl/WebFetch) and NOT
+  for defeating captchas or fraud-gated public sign-ups (those are bot-walled —
+  tell the user to use their normal browser).
+---
+
+# calude-browse — human-like browser copilot
+
+calude-browse drives the user's **real Chrome** over the DevTools Protocol with
+**trusted input events** and an **accessibility-tree page model** (no screenshots).
+The reasoning loop is *yours* — the MCP server is just the hands and eyes. It shines
+at **authenticated, complex-UI work** (dashboards, admin panels, multi-step forms),
+which is exactly the work other tools can't do.
+
+## Setup (once)
+The MCP server lives at `/home/ashish/projects/calude_browse`. Register it:
+```bash
+claude mcp add calude-browse -- node /home/ashish/projects/calude_browse/src/mcp-server.js
+```
+Or rely on the project-scoped `.mcp.json` if running inside that repo. Tools appear as
+`mcp__calude-browse__browser_*`. **After any code change to the server, the user must
+reconnect the MCP** (`/mcp` → reconnect, or restart) — the server loads at startup.
+Chrome persists on `:9222` across a reconnect, so logins survive.
+
+## The core loop: read → act → verify
+This is the whole discipline. Do not skip it.
+
+1. **`browser_read` first.** It returns a compact list of interactable elements, each
+   with a stable `[index]`, role, accessible name, and current value. You act by
+   `[index]`, so you must have a fresh read.
+2. **Act** with one tool (`browser_click`, `browser_type`, …) referencing an `[index]`
+   from the *latest* read.
+3. **The result of every action is the updated page model** — read it to confirm the
+   action did what you expected before choosing the next step. Indexes are only valid
+   against the most recent model; after navigation or any DOM change, the previous
+   indexes are stale.
+
+Why this matters: the model is semantic, not pixel-based, so it survives restyling and
+is cheap — but indexes shift as the page changes, so always reason from the freshest
+model.
+
+## Tools
+
+**Perceive**
+- `browser_read` — the semantic page model. Your primary sense. Call it first and after
+  anything uncertain. It also reports a `FOCUSED OVERLAY` (a dialog's controls are
+  listed first) and how many elements were truncated.
+- `browser_screenshot` — PNG, **fallback only** for things the model can't describe
+  (canvas/WebGL, or to read non-interactive text/values, or to find coordinates for
+  `browser_click_xy`).
+
+**Navigate**
+- `browser_navigate {url}` · `browser_back` · `browser_scroll {dy}` (positive = down).
+- Tabs/popups: `browser_list_tabs`, `browser_switch_tab {tab}` (index or targetId),
+  `browser_close_tab`. **Popups, new tabs, and OAuth windows auto-focus** — after a
+  click that opens one, the next `browser_read` is already on it. Use `list_tabs` to
+  see/switch when several are open.
+
+**Act**
+- `browser_click {index}` — humanized cursor path + trusted click.
+- `browser_type {index, text, submit?}` — focuses the field, **replaces** its contents
+  (it clears first), types with human cadence; `submit:true` presses Enter.
+- `browser_click_xy {x, y}` — **fallback** click at viewport pixels (read coords off a
+  screenshot) for controls not in the model (custom/unlabeled widgets, canvas). Prefer
+  `browser_click` by index whenever the element is in the model. Not risk-classified.
+- `browser_drag {from, to}` — drag one element onto another (reorder lists, sliders, DnD).
+
+**Flow cache** — record a task once, replay it cheaply forever:
+- `browser_clear_trace` → drive the task → `browser_save_flow {name}` → later
+  `browser_run_flow {name, overrides?}`. Replay re-resolves each step by its semantic
+  selector (role+name), so it survives layout churn; `overrides` (a map of 0-based
+  type-step ordinal → text, e.g. `{"0":"new query"}`) reuses a flow with different
+  input. If a step can't be located or is gated, replay stops and hands you the page.
+- `browser_list_flows` lists saved flows.
+
+**Safety** (gates on mutating actions):
+- Destructive (delete/buy/pay/send/publish…) and sensitive (password/card/OTP) actions
+  return a **CONFIRMATION REQUIRED** token instead of executing. Call
+  `browser_confirm {token}` to proceed, or `{token, approve:false}` to cancel. (With the
+  policy set to human approval, a person must approve out-of-band — surface that to the
+  user.)
+- `browser_halt` / `browser_resume` — kill switch. `browser_safety_status` — current state.
+
+## Key behaviors & gotchas (learned the hard way)
+- **Read before you act, re-read after.** Stale indexes are the #1 source of wrong clicks.
+- **Long pages / dialogs:** when a modal is open its controls are surfaced first; the
+  model is capped (default 400 elements, `CALUDE_MAX_ELEMENTS`) and reports truncation.
+- **Off-model controls:** if a checkbox/button isn't in the model, screenshot it and use
+  `browser_click_xy` with the coordinates.
+- **iframes & shadow DOM:** same-origin iframes and open shadow roots ARE perceived and
+  clickable. **Cross-origin iframes (e.g. hCaptcha) are not** — Same-Origin Policy hides
+  them; you can't read or reliably click inside them.
+- **Account creation & fraud-gated sign-ups are bot-walled.** Cloudflare/hCaptcha/fraud
+  heuristics block the automated browser by design (we've seen F6S pause, SaaSHub
+  captcha, Google-signup-disabled). Do **not** try to brute-force these — tell the user
+  to do the sign-up in their normal browser, then drive the authenticated session.
+- **Logins:** the copilot uses the user's real Chrome profile/session. If a page redirects
+  to a login, ask the user to log in (the Chrome window is on their screen), then continue.
+- **Dropped connection self-heals:** if Chrome closes, the next action relaunches/
+  re-attaches automatically (a fresh launch loses logins, though).
+
+## When to use it — and when not
+**Great fit (use it):** logged-in dashboards and admin panels (analytics, ad/SEO
+consoles, CMS, CRM, cloud providers), multi-step forms, reordering/drag UIs, multi-tab
+and OAuth-popup flows, recording a repeatable internal workflow, reading a page's
+structure.
+
+**Wrong tool (don't):** scraping static HTML or JSON (use `curl`/`WebFetch` — faster and
+no browser needed); defeating captchas or creating accounts on fraud-protected public
+sites (bot-walled — hand to the user); anything that needs to read inside a cross-origin
+iframe.
+
+## A typical task
+> "In the analytics dashboard, create a new channel group called X and add a channel."
+
+1. `browser_navigate` to the dashboard → `browser_read`.
+2. Click through the nav by index, re-reading at each step; when a slide-over/dialog
+   opens, its controls are surfaced first.
+3. `browser_type` into fields (it replaces existing values); for an unlabeled checkbox,
+   `browser_screenshot` + `browser_click_xy`.
+4. Before a final destructive/irreversible "Save/Delete/Submit", expect a confirm token;
+   show the user what's about to happen and `browser_confirm`.
+5. To make it repeatable: `browser_clear_trace` before, `browser_save_flow` after.
+
+Full architecture and design notes: the repo `README.md` at
+`/home/ashish/projects/calude_browse`.

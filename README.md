@@ -129,6 +129,16 @@ node src/approve.js <token>       # human approves a gated action
 node src/approve.js --halt        # emergency stop
 ```
 
+## Skill (for Claude Code)
+
+`skill/calude-browse/SKILL.md` teaches any agent how to drive this copilot well
+(the read→act→verify loop, every `browser_*` tool, the flow cache, the safety
+gates, and the gotchas). Install it so it auto-triggers on browser tasks:
+
+```bash
+cp -r skill/calude-browse ~/.claude/skills/calude-browse
+```
+
 ## Perception scaling & overlays
 
 The semantic page model is bounded by `CALUDE_MAX_ELEMENTS` (default 400). When a
