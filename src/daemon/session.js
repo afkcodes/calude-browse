@@ -50,11 +50,23 @@ function findEl(i) {
 const norm = (s) => (s || "").trim().replace(/\s+/g, " ").toLowerCase();
 const matchOf = (el) => ({ role: el.role, name: el.name, type: el.type });
 
-function matchEl(m) {
+function matchEl(m, near) {
   const cands = (model?.elements || []).filter(
     (e) => e.role === m.role && (m.name ? norm(e.name) === norm(m.name) : true) && (m.type ? e.type === m.type : true)
   );
-  return cands[0] || null;
+  if (cands.length <= 1) return cands[0] || null;
+  // Multiple candidates matching {role, name, type}. If the caller passed the
+  // intended element's position, pick the nearest one. This disambiguates both
+  // UNNAMED duplicates (an unlabeled <textarea> vs the page's search box) AND
+  // duplicates that share the SAME accessible name (e.g. a subreddit's
+  // "description" and "sidebar" textareas, both named by their identical text) —
+  // without a position hint, either would otherwise collapse to the first in DOM
+  // order and land the action in the wrong field.
+  if (near) {
+    const d2 = (e) => (e.x - near.x) ** 2 + (e.y - near.y) ** 2;
+    return cands.reduce((best, e) => (d2(e) < d2(best) ? e : best));
+  }
+  return cands[0];
 }
 
 function record(step) {
@@ -77,7 +89,7 @@ async function clickVerified(match, fallback) {
   let snap = { text: "" };
   for (let attempt = 1; attempt <= 2; attempt++) {
     const before = fpOf(model);
-    const target = matchEl(match) || fallback;
+    const target = matchEl(match, fallback) || fallback;
     if (!target) return { text: "(target no longer present)" };
     await exec.click(C(), target.x, target.y);
     await sleep(700);
@@ -94,7 +106,7 @@ async function typeVerified(match, text, submit, fallback) {
   let snap = { text: "" };
   for (let attempt = 1; attempt <= 2; attempt++) {
     const before = fpOf(model);
-    const target = matchEl(match) || fallback;
+    const target = matchEl(match, fallback) || fallback;
     if (!target) return { text: "(input no longer present)" };
     await exec.click(C(), target.x, target.y);
     await exec.clearField(C()); // replace, don't append — fixes garble on retry
@@ -102,7 +114,13 @@ async function typeVerified(match, text, submit, fallback) {
     if (submit) await exec.pressEnter(C());
     await sleep(900);
     snap = await read();
-    const ok = submit ? fpOf(snap.model) !== before : norm(matchEl(match)?.value || "").includes(norm(text));
+    // Verify the type took. The page model TRUNCATES each element's value to 80
+    // chars, so checking value.includes(fullText) always fails for long inputs —
+    // which used to trigger a needless second (identical) type. Instead treat the
+    // (possibly truncated) field value as a PREFIX of what we typed: if the field
+    // holds a non-empty substring of our text, it landed.
+    const v = norm(matchEl(match, fallback)?.value || "");
+    const ok = submit ? fpOf(snap.model) !== before : (v.length > 0 && norm(text).includes(v));
     if (ok) return { text: snap.text + (attempt > 1 ? "\n(verified after retry)" : "") };
     if (attempt < 2) await sleep(350);
   }

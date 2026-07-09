@@ -44,6 +44,12 @@ export async function typeText(client, text) {
     if (step.type === "backspace") {
       await Input.dispatchKeyEvent({ type: "keyDown", windowsVirtualKeyCode: 8, key: "Backspace", code: "Backspace" });
       await Input.dispatchKeyEvent({ type: "keyUp", windowsVirtualKeyCode: 8, key: "Backspace", code: "Backspace" });
+    } else if (step.ch === "\n" || step.ch === "\r") {
+      // A "char" event carrying "\n" does NOT insert a line break in a textarea
+      // or contenteditable — that needs a real Enter key event. Emit one so
+      // multi-line input (YAML/config, code, messages) keeps its line breaks.
+      await Input.dispatchKeyEvent({ type: "keyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter", text: "\r" });
+      await Input.dispatchKeyEvent({ type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
     } else {
       await Input.dispatchKeyEvent({ type: "char", text: step.ch });
     }

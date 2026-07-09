@@ -68,18 +68,25 @@ export function mousePath(from, to, opts = {}) {
 // occasional typo→backspace→retype. Returns a list of key actions.
 export function typingPlan(text) {
   const plan = [];
+  // Long content (configs, wiki pages, multi-paragraph messages) at full human
+  // cadence takes minutes and the CDP WebSocket doesn't survive that — it drops
+  // mid-type. So above a threshold, type FAST (still trusted key events, just
+  // little/no inter-key delay and no typo simulation). Short fields keep the
+  // human cadence that matters for anti-detection.
+  const fast = text.length > 400;
   for (const ch of text) {
-    if (rnd() < 0.04 && /[a-z]/i.test(ch)) {
+    if (!fast && rnd() < 0.04 && /[a-z]/i.test(ch)) {
       const wrong = String.fromCharCode(ch.charCodeAt(0) + (rnd() < 0.5 ? 1 : -1));
-      plan.push({ type: "char", ch: wrong, dt: keyDelay(wrong) });
+      plan.push({ type: "char", ch: wrong, dt: keyDelay(wrong, fast) });
       plan.push({ type: "backspace", dt: 80 + rnd() * 120 });
     }
-    plan.push({ type: "char", ch, dt: keyDelay(ch) });
+    plan.push({ type: "char", ch, dt: keyDelay(ch, fast) });
   }
   return plan;
 }
 
-function keyDelay(ch) {
+function keyDelay(ch, fast) {
+  if (fast) return 2 + Math.round(rnd() * 8); // ~2-10ms/char: ~1700 chars in ~15s
   let base = 55 + rnd() * 90;          // ~55-145ms typical
   if (ch === " ") base += rnd() * 90;  // pause at word boundaries
   if (/[.,!?]/.test(ch)) base += rnd() * 140;
