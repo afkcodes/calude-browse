@@ -36,8 +36,10 @@ becomes the brain** — Claude Code, Claude Desktop, or our own agent — and dr
 a real Chrome through trusted, humanized input. No API key required here; the
 connecting client supplies the reasoning loop.
 
-Tools: `browser_read`, `browser_navigate`, `browser_click`, `browser_click_xy`,
-`browser_type`, `browser_drag`, `browser_scroll`, `browser_back`,
+Tools: `browser_read`, `browser_read_text` (page prose), `browser_navigate`,
+`browser_click`, `browser_click_xy`, `browser_type`, `browser_press` (named
+keys — Escape/arrows/Tab), `browser_select` (native dropdowns), `browser_drag`,
+`browser_scroll`, `browser_back`,
 `browser_screenshot` (vision fallback), tabs (`browser_list_tabs`,
 `browser_switch_tab`, `browser_close_tab`), the flow cache (`browser_clear_trace`, `browser_save_flow`,
 `browser_list_flows`, `browser_run_flow`), and safety (`browser_confirm`,
@@ -112,16 +114,27 @@ passes through `daemon/safety.js`:
 - **Policy** (`safety.json`) — each risk maps to `allow | confirm | block`.
   Gated actions return a `CONFIRMATION REQUIRED` token instead of executing;
   `browser_confirm {token}` proceeds, `{token, approve:false}` cancels.
+- **Blocklist always hard-blocks** — a `blocklist` regex match forces a `block`
+  regardless of the risk policy, so it can never be downgraded to a
+  self-approvable `confirm`. `allowlist` forces `allow`.
+- **`click_xy` is risk-classified** when its coordinates land on a known model
+  element (it routes through the same gate as `browser_click`, so a coordinate
+  click onto a "Delete"/"Send" control can't bypass the policy); it stays
+  unclassified only when it lands on empty/unknown space.
 - **Human-in-the-loop** — set `"confirmedBy":"human"` and approval must come
   out-of-band: a person runs `node src/approve.js <token>`. The agent cannot
   self-approve. (Default `"agent"` for local/dev convenience.)
 - **Kill switch** — `browser_halt` / `browser_resume`, or out-of-band
   `node src/approve.js --halt`. A `.halt` sentinel file is checked before every
-  action, so a human can freeze the copilot instantly even mid-task.
+  action, **before every flow-replay step, and before executing an approved
+  confirmation** — so a human can freeze the copilot instantly even mid-task or
+  mid-replay. A halt mid-approval leaves the action pending (approve it after
+  resume); a halt mid-replay stops cleanly and reports where.
 - **Audit log** — every decision is appended to `logs/actions.jsonl`
   (timestamp, action, risk, decision, token).
-- **Replay is gated too** — `browser_run_flow` stops if a recorded step is
-  destructive/sensitive, so a saved macro can never silently do something risky.
+- **Replay is gated too** — `browser_run_flow` re-classifies each recorded
+  click/type/drag/select step and stops if it's destructive/sensitive/blocked,
+  so a saved macro can never silently do something risky.
 
 ```bash
 node src/approve.js --list        # see pending confirmations
@@ -164,8 +177,10 @@ Most controls are clicked by `[index]`. For ones that aren't in the model at all
 clicks at absolute viewport pixels read off `browser_screenshot` (1:1 at default
 scale). Perception also now keeps **unnamed checkboxes/radios/switches** (they
 used to be dropped for having no accessible name), so most of these are
-addressable by index again; `click_xy` is the last-resort fallback. It isn't
-risk-classified (no element context), but still honors the kill switch.
+addressable by index again; `click_xy` is the last-resort fallback. When its
+coordinates land on a known model element it's risk-classified through the same
+gate as `browser_click` (so it can't bypass the policy); it stays unclassified
+only when it lands on empty/unknown space, and always honors the kill switch.
 
 ## Drag-and-drop
 
@@ -197,8 +212,8 @@ knows to take another approach rather than assuming success.
 8. ~~Connection auto-recovery~~ ✓ — `ensure()` health-checks the socket; relaunches/re-attaches on a dropped connection.
 9. ~~Type replaces, not appends~~ ✓ — `clearField()` before typing (fixes retry garble).
 10. ~~iframe / shadow-DOM perception~~ ✓ — recursive walk pierces same-origin iframes (with coordinate offsets) + open shadow roots.
-11. OS-level input "takeover"; planner/executor split; native HTML5 drag.
-5. OS-level input escalation ("takeover mode") for the hardest anti-bot walls.
-6. iframe / shadow-DOM traversal; vision fallback for canvas/WebGL widgets.
-7. Thin MV3 extension UI talking to this daemon via native messaging.
-```
+11. ~~Keyboard, native-select & prose-read tools~~ ✓ — `browser_press` (Escape/arrows/Tab), `browser_select` (native dropdowns), `browser_read_text`.
+12. ~~Safety hardening~~ ✓ — blocklist hard-blocks; kill switch covers flow replay + pending approvals; `click_xy` is risk-classified when it lands on a model element; settle-after-click instead of a fixed sleep.
+13. OS-level input escalation ("takeover mode") for the hardest anti-bot walls; planner/executor split; native HTML5 drag.
+14. Vision fallback for canvas/WebGL widgets.
+15. Thin MV3 extension UI talking to this daemon via native messaging.

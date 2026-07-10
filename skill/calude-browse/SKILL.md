@@ -56,9 +56,11 @@ model.
 - `browser_read` — the semantic page model. Your primary sense. Call it first and after
   anything uncertain. It also reports a `FOCUSED OVERLAY` (a dialog's controls are
   listed first) and how many elements were truncated.
+- `browser_read_text {max_chars?}` — the page's visible prose (body innerText). The
+  **cheap way to read messages, errors, and body copy** that `browser_read` (interactables
+  only) omits — reach for this before spending a `browser_screenshot` on vision.
 - `browser_screenshot` — PNG, **fallback only** for things the model can't describe
-  (canvas/WebGL, or to read non-interactive text/values, or to find coordinates for
-  `browser_click_xy`).
+  (canvas/WebGL, or to find coordinates for `browser_click_xy`).
 
 **Navigate**
 - `browser_navigate {url}` · `browser_back` · `browser_scroll {dy}` (positive = down).
@@ -73,7 +75,15 @@ model.
   (it clears first), types with human cadence; `submit:true` presses Enter.
 - `browser_click_xy {x, y}` — **fallback** click at viewport pixels (read coords off a
   screenshot) for controls not in the model (custom/unlabeled widgets, canvas). Prefer
-  `browser_click` by index whenever the element is in the model. Not risk-classified.
+  `browser_click` by index whenever the element is in the model. **Risk-classified when the
+  point lands on a known model element** (routes through the same gate as `browser_click`,
+  so it can't sneak a destructive click past the policy); unclassified only on empty space.
+- `browser_press {key}` — press one named key: **Escape** (close dialogs/menus), **arrows**
+  (walk custom dropdowns/menus), **Tab** (move between fields), Enter/Backspace/Delete/
+  PageUp/PageDown/Home/End.
+- `browser_select {index, value}` — pick an option in a **NATIVE `<select>`** dropdown;
+  `value` is the option's value or its visible label. **Custom (non-native) dropdowns are
+  click + arrow keys instead** (`browser_click` the control, then `browser_press` arrows + Enter).
 - `browser_drag {from, to}` — drag one element onto another (reorder lists, sliders, DnD).
 
 **Flow cache** — record a task once, replay it cheaply forever:
@@ -90,7 +100,11 @@ model.
   `browser_confirm {token}` to proceed, or `{token, approve:false}` to cancel. (With the
   policy set to human approval, a person must approve out-of-band — surface that to the
   user.)
+- **Blocklist entries always hard-block** — a `safety.json` blocklist match can't be
+  self-approved (it forces a block regardless of policy); no token is offered.
 - `browser_halt` / `browser_resume` — kill switch. `browser_safety_status` — current state.
+  **Halt stops flow replays too** (checked before every replayed step) and refuses to run an
+  already-approved action while engaged — resume, then re-run / re-approve.
 
 ## Key behaviors & gotchas (learned the hard way)
 - **Read before you act, re-read after.** Stale indexes are the #1 source of wrong clicks.

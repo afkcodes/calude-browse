@@ -145,7 +145,10 @@ async function clickVerified(match, fallback) {
     const target = matchEl(match, fallback) || fallback;
     if (!target) return { text: "(target no longer present)" };
     await exec.click(C(), target.x, target.y);
-    await sleep(700);
+    // Short-budget settle, not a fixed sleep: a click that triggers an SPA route
+    // change keeps mounting after the old fixed 700ms, and reading too early
+    // returns a half-built model (the stale-index failure class).
+    await settle(2500, 250);
     snap = await read();
     if (fpOf(snap.model) !== before) {
       return { text: snap.text + (attempt > 1 ? "\n(verified after retry)" : "") };
@@ -173,7 +176,12 @@ async function typeVerified(match, text, submit, fallback) {
     // (possibly truncated) field value as a PREFIX of what we typed: if the field
     // holds a non-empty substring of our text, it landed.
     const v = norm(matchEl(match, fallback)?.value || "");
-    const ok = submit ? fpOf(snap.model) !== before : (v.length > 0 && norm(text).includes(v));
+    // Perception redacts credential/secret field values to «redacted» (never
+    // emits the raw value). So norm(text).includes(v) can never match — treat a
+    // redacted, non-empty value as proof the type landed, else we pointlessly
+    // retype the credential and falsely warn "typed text not reflected".
+    const redacted = v === "«redacted»";
+    const ok = submit ? fpOf(snap.model) !== before : (redacted || (v.length > 0 && norm(text).includes(v)));
     if (ok) return { text: snap.text + (attempt > 1 ? "\n(verified after retry)" : "") };
     if (attempt < 2) await sleep(350);
   }
@@ -184,7 +192,7 @@ async function typeVerified(match, text, submit, fallback) {
 async function gate(action, el, params, run) {
   safety.assertNotHalted();
   const verdict = safety.classify(action, el, params?.text || "");
-  const decision = safety.decide(verdict.risk);
+  const decision = safety.decide(verdict); // pass the verdict so a blocklist force:"block" overrides policy
   if (decision === "block") {
     safety.log({ action: verdict.desc, risk: verdict.risk, reason: verdict.reason, decision: "blocked" });
     throw new Error(`BLOCKED by safety policy: ${verdict.desc} (${verdict.reason})`);
@@ -234,7 +242,7 @@ export async function drag(fromI, toI) {
   return gate("drag", from, {}, async () => {
     record({ kind: "drag", from: matchOf(from), to: matchOf(to) });
     await exec.dragTo(C(), from.x, from.y, to.x, to.y);
-    await sleep(700);
+    await settle(2500, 250); // short settle, not a fixed sleep — a drop can trigger a re-layout/route change
     return read();
   });
 }
@@ -249,13 +257,42 @@ export async function confirm(token, approve = true) {
 export function halt(on) { return safety.setHalt(on); }
 export function safetyStatus() { return { halted: safety.isHalted(), policy: safety.policy() }; }
 
+// Which model element (if any) contains viewport point (x,y). Each element is a
+// center (x,y) + size (w,h), so its rect is [x-w/2,x+w/2]×[y-h/2,y+h/2]. Return
+// the SMALLEST-area match — the most specific control under the point.
+function hitTest(px, py) {
+  const cands = (model?.elements || []).filter((e) => {
+    const hw = (e.w || 0) / 2, hh = (e.h || 0) / 2;
+    return px >= e.x - hw && px <= e.x + hw && py >= e.y - hh && py <= e.y + hh;
+  });
+  if (!cands.length) return null;
+  return cands.reduce((best, e) => ((e.w * e.h) < (best.w * best.h) ? e : best));
+}
+
 export async function clickXY(x, y) {
   await ensure();
   safety.assertNotHalted();
+  // If (x,y) lands on a KNOWN model element, risk-classify it through the same
+  // gate as click() so a coordinate-click onto a "Delete"/"Send" control can't
+  // bypass the safety policy. The click still lands at the ORIGINAL (x,y), not
+  // the element center. The model may be STALE (page shifted since last read) —
+  // that's acceptable; a stale hit just classifies against our best knowledge.
+  const hit = hitTest(x, y);
+  if (hit) {
+    return gate("click", hit, {}, async () => {
+      // Record only on execution: a blocked/cancelled click must NOT enter the
+      // trace, or a saved flow would replay it unclassified.
+      record({ kind: "click_xy", x, y });
+      await exec.click(C(), x, y);
+      await settle(2500, 250);
+      return { text: (await read()).text };
+    });
+  }
+  // No known element there — keep the unclassified fallback behavior.
   safety.log({ action: `click_xy (${x},${y})`, risk: "unclassified", decision: "allowed" });
   record({ kind: "click_xy", x, y });
   await exec.click(C(), x, y);
-  await sleep(700);
+  await settle(2500, 250);
   return { status: "done", text: (await read()).text };
 }
 
@@ -275,6 +312,83 @@ export async function back() {
   await C().Runtime.evaluate({ expression: "history.back()" });
   await sleep(900);
   return read();
+}
+
+export async function press(key) {
+  await ensure();
+  safety.assertNotHalted();
+  record({ kind: "press", key });
+  await exec.pressKey(C(), key); // throws on unknown keys, listing the supported set
+  await settle(2500, 250);
+  return { status: "done", text: (await read()).text };
+}
+
+// Runs in the page: set a NATIVE <select> at (x,y) to the option whose value OR
+// label/text matches `value` (case-insensitive, trimmed). elementFromPoint may
+// return a child/label/wrapper, so climb to the nearest SELECT; if the hit is a
+// same-origin iframe, translate coords and dive into its contentDocument.
+function SELECT_IN_PAGE(x, y, value) {
+  function hitAt(doc, px, py) {
+    const node = doc.elementFromPoint(px, py);
+    if (node && (node.tagName === "IFRAME" || node.tagName === "FRAME")) {
+      let idoc = null;
+      try { idoc = node.contentDocument; } catch { idoc = null; }
+      if (idoc) { const fr = node.getBoundingClientRect(); return hitAt(idoc, px - fr.left, py - fr.top); }
+    }
+    return node;
+  }
+  let sel = hitAt(document, x, y);
+  while (sel && sel.tagName !== "SELECT") sel = sel.parentElement;
+  if (!sel) return { ok: false, error: "no native <select> at that element — for CUSTOM dropdowns, click it then use browser_press arrow keys + Enter" };
+  const want = String(value).trim().toLowerCase();
+  const opts = Array.prototype.slice.call(sel.options || []);
+  let matched = null;
+  for (const o of opts) {
+    const val = (o.value || "").trim().toLowerCase();
+    const lab = (o.label || o.textContent || "").trim().toLowerCase();
+    if (val === want || lab === want) { matched = o; break; }
+  }
+  if (!matched) return { ok: false, error: `no option matches "${value}". Available: ` + opts.map((o) => (o.label || o.textContent || "").trim()).join(" | ") };
+  sel.value = matched.value;
+  sel.dispatchEvent(new Event("input", { bubbles: true }));
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+  return { ok: true, label: (matched.label || matched.textContent || "").trim(), value: matched.value };
+}
+
+async function doSelect(el, value) {
+  const expr = `(${SELECT_IN_PAGE.toString()})(${el.x}, ${el.y}, ${JSON.stringify(value)})`;
+  const { result, exceptionDetails } = await C().Runtime.evaluate({ expression: expr, returnByValue: true, awaitPromise: false });
+  if (exceptionDetails) throw new Error("select failed: " + (exceptionDetails.exception?.description || exceptionDetails.text));
+  if (!result.value?.ok) throw new Error(result.value?.error || "select failed");
+  return result.value;
+}
+
+export async function select(i, value) {
+  await ensure();
+  const el = findEl(i); // inert protection applies
+  if (el.role !== "combobox") {
+    throw new Error(`element [${i}] is a ${el.role}, not a native <select> — for CUSTOM dropdowns, browser_click it then browser_press arrow keys + Enter`);
+  }
+  return gate("select", el, {}, async () => {
+    const r = await doSelect(el, value); // throws (listing options) if no match
+    record({ kind: "select", match: matchOf(el), value });
+    await settle(2500, 250);
+    return { text: `selected "${r.label}"\n\n` + (await read()).text };
+  });
+}
+
+// Read the page's visible PROSE (innerText) — cheap alternative to a screenshot
+// for messages/errors/body copy that browser_read (interactables only) omits.
+// Read-only: no halt check, not recorded in the trace.
+export async function readText(maxChars = 8000) {
+  await ensure();
+  const { result } = await C().Runtime.evaluate({
+    expression: "(document.body && (document.body.innerText || document.body.textContent)) || ''",
+    returnByValue: true, awaitPromise: false,
+  });
+  let s = String(result.value || "").replace(/\n{3,}/g, "\n\n").trim();
+  if (s.length > maxChars) s = s.slice(0, maxChars) + `\n…(truncated, ${s.length - maxChars} more chars)`;
+  return s;
 }
 
 export async function screenshot() {
@@ -323,10 +437,18 @@ export async function runFlow(name, overrides = {}) {
   try {
     for (let i = 0; i < flow.steps.length; i++) {
       const step = flow.steps[i];
+      // Kill switch covers replay too: check before EVERY step (any kind), and
+      // stop cleanly so the envelope reports where it halted. Resume + re-run.
+      if (safety.isHalted()) {
+        return { ok: false, failedStep: i, stepsRun, total: flow.steps.length,
+          reason: "halted by kill switch — resume and re-run",
+          page: model ? renderForModel(model) : "(no page read yet)" };
+      }
       if (step.kind === "navigate") { await navigateRaw(step.url); stepsRun++; continue; }
       if (step.kind === "scroll") { await exec.scrollBy(C(), step.dy); await sleep(500); await read(); stepsRun++; continue; }
       if (step.kind === "back") { await C().Runtime.evaluate({ expression: "history.back()" }); await sleep(900); await read(); stepsRun++; continue; }
-      if (step.kind === "click_xy") { await exec.click(C(), step.x, step.y); await sleep(700); await read(); stepsRun++; continue; }
+      if (step.kind === "click_xy") { await exec.click(C(), step.x, step.y); await settle(2500, 250); await read(); stepsRun++; continue; }
+      if (step.kind === "press") { await exec.pressKey(C(), step.key); await settle(2500, 250); await read(); stepsRun++; continue; }
       if (step.kind === "drag") {
         await read();
         const f = matchEl(step.from), t = matchEl(step.to);
@@ -334,8 +456,17 @@ export async function runFlow(name, overrides = {}) {
           return { ok: false, failedStep: i, stepsRun, total: flow.steps.length,
             reason: `guard failed: could not locate drag ${f ? "target" : "source"} — take over from here`, page: renderForModel(model) };
         }
+        // Classify the replayed drag just like the click/type steps below, so a
+        // recorded drag onto a risky target still goes through the gate on replay.
+        const dverdict = safety.classify("drag", f, "");
+        if (safety.decide(dverdict) !== "allow") {
+          safety.log({ action: dverdict.desc, risk: dverdict.risk, decision: "replay-stopped", flow: name });
+          return { ok: false, failedStep: i, stepsRun, total: flow.steps.length,
+            reason: `safety gate: step is ${dverdict.risk} (${dverdict.reason}) — perform this step manually so it goes through confirmation`,
+            page: renderForModel(model) };
+        }
         await exec.dragTo(C(), f.x, f.y, t.x, t.y);
-        await sleep(700); await read();
+        await settle(2500, 250); await read();
         stepsRun++; continue;
       }
 
@@ -349,7 +480,7 @@ export async function runFlow(name, overrides = {}) {
         };
       }
       const verdict = safety.classify(step.kind, el, step.text || "");
-      if (safety.decide(verdict.risk) !== "allow") {
+      if (safety.decide(verdict) !== "allow") {
         safety.log({ action: verdict.desc, risk: verdict.risk, decision: "replay-stopped", flow: name });
         return {
           ok: false, failedStep: i, stepsRun, total: flow.steps.length,
@@ -362,6 +493,8 @@ export async function runFlow(name, overrides = {}) {
         const text = overrides[typeOrdinal] ?? overrides[String(typeOrdinal)] ?? step.text;
         typeOrdinal++;
         await typeVerified(step.match, text, step.submit, el);
+      } else if (step.kind === "select") {
+        await doSelect(el, step.value); await settle(2500, 250); await read();
       }
       stepsRun++;
     }

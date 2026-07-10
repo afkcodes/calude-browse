@@ -79,6 +79,18 @@ function PAGE_EXTRACTOR(maxElements) {
     return raw.slice(0, 80) || undefined;
   }
 
+  // For a native <select>, list its option labels (token-cheap): up to 12,
+  // trimmed and capped ~40 chars each, plus a "(+N more)" marker if truncated.
+  function optionsOf(el) {
+    if (el.tagName !== "SELECT") return undefined;
+    const opts = Array.prototype.slice.call(el.options || []);
+    if (!opts.length) return undefined;
+    const labels = opts.slice(0, 12).map((o) => (o.label || o.textContent || "").trim().replace(/\s+/g, " ").slice(0, 40));
+    const more = opts.length - labels.length;
+    if (more > 0) labels.push("(+" + more + " more)");
+    return labels;
+  }
+
   // The topmost open overlay/dialog (if any). Later-in-DOM wins, which is
   // almost always the most recently opened (and visually frontmost) layer.
   function topOverlay() {
@@ -136,6 +148,7 @@ function PAGE_EXTRACTOR(maxElements) {
         el, role, name,
         type: el.getAttribute("type") || undefined,
         value: redactedValue(el),
+        options: optionsOf(el),
         x: Math.round(r.x + r.width / 2),
         y: Math.round(r.y + r.height / 2),
         w: Math.round(r.width), h: Math.round(r.height),
@@ -155,7 +168,7 @@ function PAGE_EXTRACTOR(maxElements) {
   items.sort((a, b) => a.pri - b.pri);
   const limited = items.slice(0, maxElements);
   const elements = limited.map((it, i) => ({
-    i, role: it.role, name: it.name, type: it.type, value: it.value, x: it.x, y: it.y, w: it.w, h: it.h,
+    i, role: it.role, name: it.name, type: it.type, value: it.value, options: it.options, x: it.x, y: it.y, w: it.w, h: it.h,
     inert: it.inert || undefined,
   }));
 
@@ -215,6 +228,7 @@ export function renderForModel(model) {
     if (e.type) bits.push(`(${e.type})`);
     if (e.name) bits.push(`"${e.name}"`);
     if (e.value) bits.push(`= "${e.value}"`);
+    if (e.options) bits.push(`options: [${e.options.join(" | ")}]`);
     if (e.inert) bits.push("[inert: behind the dialog — do not act on this]");
     return bits.join(" ");
   });

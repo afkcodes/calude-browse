@@ -6,6 +6,7 @@
 import { launchChrome, attach } from "./daemon/chrome.js";
 import { perceive, renderForModel } from "./daemon/perception.js";
 import * as exec from "./daemon/executor.js";
+import * as session from "./daemon/session.js";
 import { runTask } from "./daemon/agent.js";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -24,7 +25,14 @@ function parseArgs(argv) {
 
 async function navigate(client, url) {
   await client.Page.navigate({ url });
-  await client.Page.loadEventFired();
+  // loadEventFired NEVER resolves when Chrome is already on this URL or the SPA
+  // does an in-page route change — and an unresolved promise is not a rejected
+  // one, so .catch() cannot save you. Race it against a deadline (same pattern
+  // as session.navigateRaw).
+  await Promise.race([
+    client.Page.loadEventFired().catch(() => {}),
+    sleep(2500),
+  ]);
   await sleep(800);
 }
 
@@ -53,26 +61,34 @@ async function scriptedDemo(client, start) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const proc = await launchChrome();
-  const client = await attach();
-  console.log("[cdp] attached.");
 
-  try {
-    if (args.noLlm) {
+  // Scripted --no-llm demo stays on the raw client path (no LLM, no session).
+  if (args.noLlm) {
+    const proc = await launchChrome();
+    const client = await attach();
+    console.log("[cdp] attached.");
+    try {
       await scriptedDemo(client, args.start);
-    } else {
-      if (!args.goal) {
-        console.error('Usage: node src/cli.js "your goal here"   (or --no-llm for the scripted demo)');
-        process.exit(1);
-      }
-      if (args.start) await navigate(client, args.start);
-      const result = await runTask(client, args.goal);
-      console.log("\n=== RESULT ===\n" + (result ?? "(incomplete)"));
+    } finally {
+      await client.close();
+      if (proc) console.log("[chrome] launched instance left running on debug port.");
     }
+    return;
+  }
+
+  if (!args.goal) {
+    console.error('Usage: node src/cli.js "your goal here"   (or --no-llm for the scripted demo)');
+    process.exit(1);
+  }
+  // LLM path: the session module owns its Chrome connection (launch/attach,
+  // auto-recovery) and applies the safety gates + verify-retry, so we no longer
+  // attach our own client here.
+  try {
+    if (args.start) await session.navigate(args.start);
+    const result = await runTask(args.goal);
+    console.log("\n=== RESULT ===\n" + (result ?? "(incomplete)"));
   } finally {
-    await client.close();
-    // Leave Chrome running if we attached to an existing instance.
-    if (proc) console.log("[chrome] launched instance left running on debug port.");
+    await session.close();
   }
 }
 

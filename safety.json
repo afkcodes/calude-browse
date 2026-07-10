@@ -2,7 +2,7 @@
   "destructive": "confirm",
   "sensitive": "confirm",
   "confirmedBy": "agent",
-  "_comment": "destructive/sensitive: allow | confirm | block. confirmedBy: 'agent' lets the LLM approve its own confirm step (fine for dev/local). Set to 'human' for real logged-in accounts so a person must run `node src/approve.js <token>`. blocklist/allowlist are arrays of case-insensitive regex matched against the action description.",
+  "_comment": "destructive/sensitive: allow | confirm | block. confirmedBy: 'agent' lets the LLM approve its own confirm step (fine for dev/local). Set to 'human' for real logged-in accounts so a person must run `node src/approve.js <token>`. blocklist/allowlist are arrays of case-insensitive regex matched against the action description. blocklist entries ALWAYS hard-block — they cannot be self-approved regardless of policy; allowlist forces allow.",
   "blocklist": [],
   "allowlist": []
 }

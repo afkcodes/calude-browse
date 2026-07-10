@@ -52,7 +52,10 @@ export function classify(action, el = {}, text = "") {
   const desc = `${action} ${el.role || ""} "${el.name || ""}" ${el.value || ""}`.trim();
   const pol = policy();
 
-  for (const re of pol.blocklist) if (new RegExp(re, "i").test(desc)) return { risk: "destructive", reason: `matches blocklist /${re}/`, desc };
+  // A blocklist match FORCES a block regardless of policy: carry force:"block"
+  // so decide() cannot map it through the (default "confirm") destructive policy
+  // and let the agent self-approve it.
+  for (const re of pol.blocklist) if (new RegExp(re, "i").test(desc)) return { risk: "destructive", force: "block", reason: `matches blocklist /${re}/`, desc };
   for (const re of pol.allowlist) if (new RegExp(re, "i").test(desc)) return { risk: "safe", reason: "allowlisted", desc };
 
   if (action === "type") {
@@ -67,6 +70,13 @@ export function classify(action, el = {}, text = "") {
 }
 
 export function decide(risk) {
+  // Accepts a verdict object OR a bare risk string. A verdict may carry
+  // force:"block" (blocklist match) which overrides policy — a blocklisted
+  // action can never be downgraded to a self-approvable "confirm".
+  if (risk && typeof risk === "object") {
+    if (risk.force) return risk.force;
+    risk = risk.risk;
+  }
   if (risk === "safe") return "allow";
   return policy()[risk] || "confirm";
 }
@@ -123,6 +133,9 @@ export async function approve(token, ok = true) {
   if (policy().confirmedBy === "human" && !fs.existsSync(path.join(PENDING_DIR, token + ".approved"))) {
     return { waiting: true, summary: p.summary, file: path.join(PENDING_DIR, token + ".json"), how: `a human must run:  node src/approve.js ${token}` };
   }
+  // Kill switch covers approved actions too: if halted, throw WITHOUT consuming
+  // the token so the action stays pending and can be approved after resume.
+  assertNotHalted();
   log({ action: p.summary, risk: p.risk, decision: "confirmed-executed" });
   const result = await p.run();
   cleanup(token);

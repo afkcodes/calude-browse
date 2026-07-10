@@ -72,6 +72,35 @@ export async function pressEnter(client) {
   await Input.dispatchKeyEvent({ type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
 }
 
+// Named-key press (Escape to dismiss dialogs, arrows to walk custom dropdowns,
+// Tab between fields, etc.). Sends a matching keyDown+keyUp with the correct
+// virtual key code / code so page handlers fire. Enter also carries text "\r"
+// (like pressEnter) so it submits/inserts a newline.
+const KEYMAP = {
+  Escape:     { code: "Escape",     keyCode: 27 },
+  Tab:        { code: "Tab",        keyCode: 9 },
+  Enter:      { code: "Enter",      keyCode: 13, text: "\r" },
+  Backspace:  { code: "Backspace",  keyCode: 8 },
+  Delete:     { code: "Delete",     keyCode: 46 },
+  ArrowUp:    { code: "ArrowUp",    keyCode: 38 },
+  ArrowDown:  { code: "ArrowDown",  keyCode: 40 },
+  ArrowLeft:  { code: "ArrowLeft",  keyCode: 37 },
+  ArrowRight: { code: "ArrowRight", keyCode: 39 },
+  PageUp:     { code: "PageUp",     keyCode: 33 },
+  PageDown:   { code: "PageDown",   keyCode: 34 },
+  Home:       { code: "Home",       keyCode: 36 },
+  End:        { code: "End",        keyCode: 35 },
+};
+
+export async function pressKey(client, key, modifiers = 0) {
+  const k = KEYMAP[key];
+  if (!k) throw new Error(`unsupported key "${key}" — supported: ${Object.keys(KEYMAP).join(", ")}`);
+  const { Input } = client;
+  const base = { key, code: k.code, windowsVirtualKeyCode: k.keyCode, modifiers };
+  await Input.dispatchKeyEvent({ type: "keyDown", ...base, ...(k.text ? { text: k.text } : {}) });
+  await Input.dispatchKeyEvent({ type: "keyUp", ...base });
+}
+
 export async function scrollBy(client, dy) {
   // Scroll via JS, not a synthetic mouse wheel. dispatchMouseEvent({mouseWheel})
   // can hang for tens of seconds when the cursor sits over an autoplaying video

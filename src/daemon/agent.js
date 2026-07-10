@@ -1,15 +1,14 @@
 // agent.js — the brain. A Claude tool-use loop over the semantic page model.
 //
-// Spike form: a single capable observe→act→verify loop. The planner/executor
-// split and the deterministic flow-cache (replay learned site macros, fall back
-// to the model only on failure) layer on top of this later.
+// This standalone loop drives the browser THROUGH the session module (not raw
+// exec/perceive), so it inherits the same lessons the MCP path already has:
+// safety gates + confirmation, verify-and-retry, settle-before-read, the audit
+// log, and multi-tab following. The session owns its own Chrome connection.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { perceive, renderForModel } from "./perception.js";
-import * as exec from "./executor.js";
-import { setTimeout as sleep } from "node:timers/promises";
+import * as session from "./session.js";
 
-const MODEL = process.env.CALUDE_MODEL || "claude-sonnet-4-6";
+const MODEL = process.env.CALUDE_MODEL || "claude-sonnet-5";
 
 const TOOLS = [
   { name: "navigate", description: "Go to a URL.",
@@ -20,6 +19,8 @@ const TOOLS = [
     input_schema: { type: "object", properties: { index: { type: "integer" }, text: { type: "string" }, submit: { type: "boolean", description: "press Enter after" } }, required: ["index", "text"] } },
   { name: "scroll", description: "Scroll the page by dy pixels (positive = down).",
     input_schema: { type: "object", properties: { dy: { type: "integer" } }, required: ["dy"] } },
+  { name: "confirm", description: "Approve (or cancel) a pending gated action by its token. Destructive/sensitive actions return a token instead of executing; this proceeds (or cancels with approve:false).",
+    input_schema: { type: "object", properties: { token: { type: "string" }, approve: { type: "boolean" } }, required: ["token"] } },
   { name: "done", description: "The task is complete. Provide a short result summary.",
     input_schema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"] } },
 ];
@@ -28,19 +29,30 @@ const SYSTEM = `You are a browser copilot that operates a real Chrome browser li
 You are given a SEMANTIC PAGE MODEL: a list of interactable elements, each with an index [n], role, name, and current value.
 Choose ONE tool call per turn. Refer to elements ONLY by their [index].
 After each action you will receive the updated page model so you can verify the effect and self-correct.
+Some actions (destructive/sensitive: delete, pay, send, publish, credentials…) do NOT execute immediately — they return a CONFIRMATION token. Decide, then call "confirm" with the token to proceed (or approve:false to cancel).
 Be efficient. When the goal is achieved, call "done".`;
 
-async function snapshot(client) {
-  const model = await perceive(client);
-  return { model, text: renderForModel(model) };
+// Render a gated session envelope as text for the LLM. On a plain "done" the
+// text IS the updated page model, so no separate re-read is needed.
+function envelopeText(res) {
+  switch (res.status) {
+    case "confirm":
+      return `CONFIRMATION REQUIRED (${res.risk}): ${res.summary}\nreason: ${res.reason}\n→ call confirm {"token":"${res.token}"} to proceed, or {"token":"${res.token}","approve":false} to cancel.`;
+    case "waiting":
+      return `AWAITING HUMAN APPROVAL — ${res.summary}\n${res.how}`;
+    case "cancelled":
+      return `cancelled: ${res.summary}`;
+    default:
+      return res.text;
+  }
 }
 
-export async function runTask(client, goal, { maxSteps = 20 } = {}) {
+export async function runTask(goal, { maxSteps = 20 } = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set — use --no-llm for the scripted demo.");
   const anthropic = new Anthropic({ apiKey });
 
-  let { model, text } = await snapshot(client);
+  const text = (await session.read()).text;
   const messages = [
     { role: "user", content: `GOAL: ${goal}\n\nCURRENT PAGE:\n${text}` },
   ];
@@ -60,54 +72,33 @@ export async function runTask(client, goal, { maxSteps = 20 } = {}) {
 
     const { name, input } = toolUse;
     console.log(`[agent] step ${step + 1}: ${name} ${JSON.stringify(input)}`);
+    if (name === "done") { console.log("[agent] DONE: " + input.summary); return input.summary; }
+
     let resultText;
     try {
-      resultText = await applyAction(client, name, input, model);
-      if (name === "done") { console.log("[agent] DONE: " + input.summary); return input.summary; }
+      resultText = await applyAction(name, input);
     } catch (e) {
       resultText = "ERROR: " + e.message;
     }
 
-    await sleep(600); // let the page settle
-    ({ model, text } = await snapshot(client));
     messages.push({
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: toolUse.id, content: `${resultText}\n\nUPDATED PAGE:\n${text}` }],
+      content: [{ type: "tool_result", tool_use_id: toolUse.id, content: resultText }],
     });
   }
   console.log("[agent] step budget exhausted");
   return null;
 }
 
-async function applyAction(client, name, input, model) {
-  const find = (i) => {
-    const el = model.elements.find((e) => e.i === i);
-    if (!el) throw new Error(`no element [${i}] in page model`);
-    return el;
-  };
+// Session actions already settle, verify-and-retry, and re-read — the envelope's
+// text carries the updated page model.
+async function applyAction(name, input) {
   switch (name) {
-    case "navigate":
-      await client.Page.navigate({ url: input.url });
-      await client.Page.loadEventFired();
-      return `navigated to ${input.url}`;
-    case "click": {
-      const el = find(input.index);
-      await exec.click(client, el.x, el.y);
-      return `clicked [${input.index}] ${el.role} "${el.name}"`;
-    }
-    case "type": {
-      const el = find(input.index);
-      await exec.click(client, el.x, el.y);
-      await exec.typeText(client, input.text);
-      if (input.submit) await exec.pressEnter(client);
-      return `typed into [${input.index}]${input.submit ? " + Enter" : ""}`;
-    }
-    case "scroll":
-      await exec.scrollBy(client, input.dy);
-      return `scrolled ${input.dy}px`;
-    case "done":
-      return input.summary;
-    default:
-      throw new Error("unknown tool " + name);
+    case "navigate": return envelopeText(await session.navigate(input.url));
+    case "click":    return envelopeText(await session.click(input.index));
+    case "type":     return envelopeText(await session.type(input.index, input.text, !!input.submit));
+    case "scroll":   return (await session.scroll(input.dy)).text;
+    case "confirm":  return envelopeText(await session.confirm(input.token, input.approve !== false));
+    default:         throw new Error("unknown tool " + name);
   }
 }

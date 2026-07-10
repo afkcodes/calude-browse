@@ -50,8 +50,23 @@ const TOOLS = [
   },
   {
     name: "browser_click_xy",
-    description: "FALLBACK: click at absolute viewport pixel coordinates (x, y) — for controls NOT in the page model (unlabeled/custom checkboxes, canvas, icons). Read coordinates off browser_screenshot (its pixels match these at the default 1x scale). Prefer browser_click by [index] whenever the element is in the model; this isn't risk-classified since there's no element context.",
+    description: "FALLBACK: click at absolute viewport pixel coordinates (x, y) — for controls NOT in the page model (unlabeled/custom checkboxes, canvas, icons). Read coordinates off browser_screenshot (its pixels match these at the default 1x scale). Prefer browser_click by [index] whenever the element is in the model. Risk-classified when the point lands on a known model element (so it can't bypass the safety gate); unclassified when it lands on empty/unknown space.",
     inputSchema: { type: "object", properties: { x: { type: "integer" }, y: { type: "integer" } }, required: ["x", "y"] },
+  },
+  {
+    name: "browser_press",
+    description: "Press a single named key (trusted key event): Escape (close dialogs/menus), ArrowUp/ArrowDown/ArrowLeft/ArrowRight (move through custom dropdowns/menus), Tab (move between fields), Enter, Backspace, Delete, PageUp, PageDown, Home, End. Returns the updated page model.",
+    inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] },
+  },
+  {
+    name: "browser_select",
+    description: "Choose an option in a NATIVE <select> dropdown at [index]. 'value' may be the option's value OR its visible label (case-insensitive). For CUSTOM (non-native) dropdowns, browser_click the control then browser_press arrow keys + Enter instead. Returns the updated page model.",
+    inputSchema: { type: "object", properties: { index: { type: "integer" }, value: { type: "string" } }, required: ["index", "value"] },
+  },
+  {
+    name: "browser_read_text",
+    description: "Read the page's visible prose (body innerText) — the cheap way to read messages, errors, and body copy. Complements browser_read (which lists only interactable elements) and avoids browser_screenshot (which costs vision). Optional max_chars caps the output (default 8000).",
+    inputSchema: { type: "object", properties: { max_chars: { type: "integer" } }, required: [] },
   },
   {
     name: "browser_back",
@@ -149,6 +164,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "browser_scroll":   return text((await session.scroll(args.dy)).text);
       case "browser_drag":     return formatAction(await session.drag(args.from, args.to));
       case "browser_click_xy": return formatAction(await session.clickXY(args.x, args.y));
+      case "browser_press":    return formatAction(await session.press(args.key));
+      case "browser_select":   return formatAction(await session.select(args.index, args.value));
+      case "browser_read_text": return text(await session.readText(args.max_chars ?? 8000));
       case "browser_back":     return text((await session.back()).text);
       case "browser_list_tabs": return text(JSON.stringify(await session.listTabs(), null, 2));
       case "browser_switch_tab": return text((await session.switchTab(args.tab)).text);
