@@ -13,11 +13,21 @@ import { mousePath, typingPlan } from "./motion.js";
 let cursor = { x: 1, y: 1 };
 
 async function moveAlong(Input, from, to) {
+  // The humanized move is cosmetic — the trusted press/release at the target are
+  // what make the event isTrusted. A single mouseMoved dispatch can hang for tens
+  // of seconds over an autoplaying video / heavy-compositing region, so bound each
+  // step; if one stalls, abandon the path and let the caller's press land at the
+  // target anyway. Never let humanization wedge the whole action.
   for (const p of mousePath(from, to)) {
     if (p.dt) await sleep(p.dt);
-    await Input.dispatchMouseEvent({ type: "mouseMoved", x: p.x, y: p.y, buttons: 0 });
+    const moved = await Promise.race([
+      Input.dispatchMouseEvent({ type: "mouseMoved", x: p.x, y: p.y, buttons: 0 }).then(() => true),
+      sleep(1200).then(() => false),
+    ]);
     cursor = { x: p.x, y: p.y };
+    if (!moved) break;  // a step hung; stop moving, press will still fire at `to`
   }
+  cursor = { x: to.x, y: to.y };
 }
 
 export async function moveTo(client, x, y) {
