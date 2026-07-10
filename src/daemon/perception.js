@@ -206,19 +206,34 @@ function PAGE_EXTRACTOR(maxElements) {
   };
 }
 
-export async function perceive(client) {
+// Thrown when the page's JS thread is wedged (heavy video/compositing, an
+// infinite loop) so Runtime.evaluate never returns. Callers can catch this and
+// recover (navigate away resets the renderer) instead of hanging forever.
+export class PageFrozenError extends Error {
+  constructor() { super("page perception timed out — renderer thread is frozen"); this.name = "PageFrozenError"; }
+}
+
+export async function perceive(client, timeoutMs = 8000) {
   const { Runtime } = client;
   const max = Number(process.env.CALUDE_MAX_ELEMENTS || 400);
   const expr = `(${PAGE_EXTRACTOR.toString()})(${max})`;
-  const { result, exceptionDetails } = await Runtime.evaluate({
-    expression: expr,
-    returnByValue: true,
-    awaitPromise: false,
-  });
-  if (exceptionDetails) {
-    throw new Error("perception failed: " + (exceptionDetails.exception?.description || exceptionDetails.text));
+  // The extractor runs in the page's JS context; if that thread is frozen the
+  // evaluate never resolves. Bound it so a wedged tab can't hang the whole tool.
+  let timer;
+  const guard = new Promise((_, rej) => { timer = setTimeout(() => rej(new PageFrozenError()), timeoutMs); });
+  let res;
+  try {
+    res = await Promise.race([
+      Runtime.evaluate({ expression: expr, returnByValue: true, awaitPromise: false }),
+      guard,
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
-  return result.value;
+  if (res.exceptionDetails) {
+    throw new Error("perception failed: " + (res.exceptionDetails.exception?.description || res.exceptionDetails.text));
+  }
+  return res.result.value;
 }
 
 // Render the page model as a compact, token-efficient string for the LLM.

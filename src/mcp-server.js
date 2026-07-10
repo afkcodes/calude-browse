@@ -93,6 +93,29 @@ const TOOLS = [
     description: "Capture a PNG screenshot of the viewport. Use ONLY as a fallback when the semantic model can't describe a widget (e.g. canvas/WebGL).",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "browser_read_network",
+    description:
+      "List network requests (XHR/fetch/documents/media) the current tab has made since the last top-level navigation or clear: method, URL (sensitive query params redacted), status, resource type, mime type, and a requestId. Use this to see what API endpoints a page calls. Does not fetch response bodies — use browser_network_body with a requestId for that.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        urlPattern: { type: "string", description: "only include requests whose URL contains this substring" },
+        limit: { type: "integer", description: "max requests to return, most recent first (default 50)" },
+        clear: { type: "boolean", description: "clear the log after reading" },
+      },
+    },
+  },
+  {
+    name: "browser_network_body",
+    description:
+      "Fetch the response body of one captured request by its requestId (from browser_read_network). Only returns text/JSON bodies — binary media (audio/video/image/font) is deliberately skipped, so this reads API traffic, not media content.",
+    inputSchema: {
+      type: "object",
+      properties: { requestId: { type: "string" }, max_chars: { type: "integer" } },
+      required: ["requestId"],
+    },
+  },
   // ---- flow cache: record a task once, replay it cheaply forever ----
   {
     name: "browser_clear_trace",
@@ -175,6 +198,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const data = await session.screenshot();
         return { content: [{ type: "image", data, mimeType: "image/png" }] };
       }
+      case "browser_read_network": return text((await session.readNetwork({ urlPattern: args.urlPattern, limit: args.limit, clear: !!args.clear })).text);
+      case "browser_network_body": return text(await session.networkBody(args.requestId, args.max_chars ?? 5000));
       case "browser_clear_trace": session.clearTrace(); return text("trace cleared — drive the task now, then browser_save_flow.");
       case "browser_save_flow":   return text(`saved flow ${JSON.stringify(await session.saveFlow(args.name))}`);
       case "browser_list_flows":  return text(JSON.stringify(await session.listFlows(), null, 2));

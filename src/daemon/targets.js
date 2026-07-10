@@ -12,6 +12,47 @@ let browser = null;             // browser-level CDP connection (Target domain)
 const clients = new Map();      // targetId -> per-target CDP client
 let activeId = null;
 
+// Per-target network log: a ring buffer of {requestId, method, url, resourceType,
+// status, mimeType, hasPostData, postData, finished}. Network domain is already
+// enabled per target below; this just listens and remembers what it sees so
+// browser_read_network can show "what API calls did this page make" without a
+// screenshot or a separate devtools session.
+const NET_CAP = 300;
+const networkLogs = new Map(); // targetId -> array
+
+function attachNetworkLog(client, targetId) {
+  const log = [];
+  networkLogs.set(targetId, log);
+  client.Network.requestWillBeSent((p) => {
+    log.push({
+      requestId: p.requestId,
+      method: p.request.method,
+      url: p.request.url,
+      resourceType: p.type,
+      hasPostData: !!p.request.hasPostData,
+      postData: p.request.postData,
+      status: null,
+      mimeType: null,
+      finished: false,
+    });
+    if (log.length > NET_CAP) log.shift();
+  });
+  client.Network.responseReceived((p) => {
+    const e = log.find((e) => e.requestId === p.requestId);
+    if (e) { e.status = p.response.status; e.mimeType = p.response.mimeType; }
+  });
+  client.Network.loadingFinished((p) => {
+    const e = log.find((e) => e.requestId === p.requestId);
+    if (e) e.finished = true;
+  });
+  // Clear on a top-level navigation, like devtools' network panel without
+  // "preserve log" — otherwise calls from the previous page linger and confuse
+  // "what does THIS page call".
+  client.Page.frameNavigated(({ frame }) => {
+    if (!frame.parentId) networkLogs.set(targetId, []);
+  });
+}
+
 async function enableDomains(client) {
   const { Page, DOM, Runtime, Network } = client;
   await Promise.all([Page.enable(), DOM.enable(), Runtime.enable(), Network.enable()]);
@@ -30,8 +71,10 @@ async function addTarget(targetId, makeActive) {
   }
   if (!client) return;
   await enableDomains(client);
+  attachNetworkLog(client, targetId);
   client.on("disconnect", () => {
     clients.delete(targetId);
+    networkLogs.delete(targetId);
     if (activeId === targetId) activeId = [...clients.keys()].pop() || null;
   });
   clients.set(targetId, client);
@@ -54,6 +97,7 @@ export async function init() {
     const c = clients.get(targetId);
     if (c) c.close().catch(() => {});
     clients.delete(targetId);
+    networkLogs.delete(targetId);
     if (activeId === targetId) activeId = [...clients.keys()].pop() || null;
   });
 
@@ -110,6 +154,20 @@ export async function closeActive() {
 }
 
 export function count() { return clients.size; }
+
+export function getNetworkLog(targetId) {
+  return (networkLogs.get(targetId || activeId) || []).slice();
+}
+
+export function clearNetworkLog(targetId) {
+  networkLogs.set(targetId || activeId, []);
+}
+
+export async function getResponseBody(requestId, targetId) {
+  const client = clients.get(targetId || activeId);
+  if (!client) throw new Error("no active browser target");
+  return client.Network.getResponseBody({ requestId });
+}
 
 export async function shutdown() {
   for (const c of clients.values()) { try { await c.close(); } catch {} }

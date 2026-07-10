@@ -40,7 +40,9 @@ Tools: `browser_read`, `browser_read_text` (page prose), `browser_navigate`,
 `browser_click`, `browser_click_xy`, `browser_type`, `browser_press` (named
 keys — Escape/arrows/Tab), `browser_select` (native dropdowns), `browser_drag`,
 `browser_scroll`, `browser_back`,
-`browser_screenshot` (vision fallback), tabs (`browser_list_tabs`,
+`browser_screenshot` (vision fallback), `browser_read_network` (list captured
+XHR/fetch calls) + `browser_network_body` (fetch one response body, text/JSON
+only — binary media is skipped by design), tabs (`browser_list_tabs`,
 `browser_switch_tab`, `browser_close_tab`), the flow cache (`browser_clear_trace`, `browser_save_flow`,
 `browser_list_flows`, `browser_run_flow`), and safety (`browser_confirm`,
 `browser_halt`, `browser_resume`, `browser_safety_status`).

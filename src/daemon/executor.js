@@ -34,15 +34,35 @@ export async function moveTo(client, x, y) {
   await moveAlong(client.Input, cursor, { x, y });
 }
 
+// Every synthetic input dispatch (mouse press/release, wheel, key, char) can
+// hang when the page's JS thread is wedged — heavy video/compositing, or a
+// composer that stalls on input. Bound them all through this helper so a stall
+// fails FAST and cleanly (the caller aborts the action) instead of hanging for
+// the full RPC timeout and wedging the run.
+async function dispatch(fn, label = "input") {
+  const ok = await Promise.race([
+    fn().then(() => true),
+    sleep(4000).then(() => false),
+  ]);
+  if (!ok) throw new Error(`${label} stalled — page thread busy; retry once it settles`);
+}
+
 export async function click(client, x, y) {
   const { Input } = client;
   await moveAlong(Input, cursor, { x, y });
   await sleep(40 + Math.round(Math.random() * 90)); // dwell before press
   const common = { x, y, button: "left", clickCount: 1 };
-  await Input.dispatchMouseEvent({ type: "mousePressed", buttons: 1, ...common });
+  await dispatch(() => Input.dispatchMouseEvent({ type: "mousePressed", buttons: 1, ...common }), "click-press");
   await sleep(45 + Math.round(Math.random() * 60));
-  await Input.dispatchMouseEvent({ type: "mouseReleased", buttons: 0, ...common });
+  await dispatch(() => Input.dispatchMouseEvent({ type: "mouseReleased", buttons: 0, ...common }), "click-release");
   cursor = { x, y };
+}
+
+// A single key/char dispatch can hang when the page's JS thread is momentarily
+// wedged (heavy video/compositing). Bound each one; if it stalls, THROW rather
+// than continue — a half-typed field must never be submitted as if complete.
+async function key(Input, ev) {
+  await dispatch(() => Input.dispatchKeyEvent(ev), "key");
 }
 
 // Type with human cadence. Uses dispatchKeyEvent("char") for text and a real
@@ -52,23 +72,23 @@ export async function typeText(client, text) {
   for (const step of typingPlan(text)) {
     await sleep(step.dt);
     if (step.type === "backspace") {
-      await Input.dispatchKeyEvent({ type: "keyDown", windowsVirtualKeyCode: 8, key: "Backspace", code: "Backspace" });
-      await Input.dispatchKeyEvent({ type: "keyUp", windowsVirtualKeyCode: 8, key: "Backspace", code: "Backspace" });
+      await key(Input, { type: "keyDown", windowsVirtualKeyCode: 8, key: "Backspace", code: "Backspace" });
+      await key(Input, { type: "keyUp", windowsVirtualKeyCode: 8, key: "Backspace", code: "Backspace" });
     } else if (step.ch === "\n" || step.ch === "\r") {
       // A "char" event carrying "\n" does NOT insert a line break in a textarea
       // or contenteditable — that needs a real Enter key event. Emit one so
       // multi-line input (YAML/config, code, messages) keeps its line breaks.
-      await Input.dispatchKeyEvent({ type: "keyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter", text: "\r" });
-      await Input.dispatchKeyEvent({ type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
+      await key(Input, { type: "keyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter", text: "\r" });
+      await key(Input, { type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
     } else {
-      await Input.dispatchKeyEvent({ type: "char", text: step.ch });
+      await key(Input, { type: "char", text: step.ch });
     }
   }
 }
 
 export async function pressEnter(client) {
   const { Input } = client;
-  await Input.dispatchKeyEvent({ type: "keyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter", text: "\r" });
+  await key(Input, { type: "keyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter", text: "\r" });
   await Input.dispatchKeyEvent({ type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
 }
 
@@ -157,10 +177,10 @@ const SELECT_ALL_MOD = process.platform === "darwin" ? 4 : 2;
 export async function clearField(client) {
   const { Input } = client;
   const a = { key: "a", code: "KeyA", windowsVirtualKeyCode: 65 };
-  await Input.dispatchKeyEvent({ type: "keyDown", modifiers: SELECT_ALL_MOD, ...a });
-  await Input.dispatchKeyEvent({ type: "keyUp", modifiers: SELECT_ALL_MOD, ...a });
+  await key(Input, { type: "keyDown", modifiers: SELECT_ALL_MOD, ...a });
+  await key(Input, { type: "keyUp", modifiers: SELECT_ALL_MOD, ...a });
   const del = { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 };
-  await Input.dispatchKeyEvent({ type: "keyDown", ...del });
-  await Input.dispatchKeyEvent({ type: "keyUp", ...del });
+  await key(Input, { type: "keyDown", ...del });
+  await key(Input, { type: "keyUp", ...del });
   await sleep(30);
 }

@@ -7,7 +7,7 @@
 // subsequent actions operate on it automatically.
 
 import { launchChrome } from "./chrome.js";
-import { perceive, renderForModel } from "./perception.js";
+import { perceive, renderForModel, PageFrozenError } from "./perception.js";
 import * as exec from "./executor.js";
 import * as flowcache from "./flowcache.js";
 import * as safety from "./safety.js";
@@ -33,7 +33,21 @@ export async function ensure() {
 
 export async function read() {
   await ensure();
-  model = await perceive(C());
+  try {
+    model = await perceive(C());
+  } catch (e) {
+    if (!(e instanceof PageFrozenError)) throw e;
+    // The renderer's JS thread is wedged (heavy video/compositing on this page).
+    // A browser-level navigation resets the renderer without touching the login,
+    // so bounce through about:blank, then the caller can go where it wanted.
+    try {
+      await C().Page.navigate({ url: "about:blank" });
+      await sleep(600);
+      model = await perceive(C());
+    } catch {
+      model = { url: "about:blank", title: "", scrollY: 0, scrollMax: 0, overlay: null, truncated: 0, elements: [] };
+    }
+  }
   let text = renderForModel(model);
   if (tabs.count() > 1) text += `\n[${tabs.count()} tabs open — browser_list_tabs / browser_switch_tab to move between them]`;
   return { model, text };
@@ -387,6 +401,61 @@ export async function readText(maxChars = 8000) {
     returnByValue: true, awaitPromise: false,
   });
   let s = String(result.value || "").replace(/\n{3,}/g, "\n\n").trim();
+  if (s.length > maxChars) s = s.slice(0, maxChars) + `\n…(truncated, ${s.length - maxChars} more chars)`;
+  return s;
+}
+
+// ---- network log --------------------------------------------------------
+// Read-only, like readText: no halt check, not recorded in the trace.
+
+const SENS_PARAM = /token|secret|password|passwd|pwd|api[-_]?key|access|auth|session|code|otp|signature|sig/i;
+function redactUrl(raw) {
+  try {
+    const u = new URL(raw);
+    for (const k of Array.from(u.searchParams.keys())) {
+      if (SENS_PARAM.test(k)) u.searchParams.set(k, "«redacted»");
+    }
+    if (u.hash && SENS_PARAM.test(u.hash)) u.hash = "#«redacted»";
+    if (u.protocol === "data:") return "data:«inline»";
+    return u.toString();
+  } catch { return raw; }
+}
+
+function renderNetwork(log) {
+  if (!log.length) return "(no network requests captured — navigate/interact first, or this tab was just switched to)";
+  return log.map((e) => {
+    const bits = [e.method, redactUrl(e.url)];
+    if (e.status != null) bits.push(`→ ${e.status}`);
+    bits.push(`[${e.resourceType}${e.mimeType ? " " + e.mimeType : ""}]`);
+    if (e.hasPostData) bits.push("(has request body)");
+    bits.push(`id=${e.requestId}`);
+    return bits.join(" ");
+  }).join("\n");
+}
+
+export async function readNetwork({ urlPattern, limit = 50, clear = false } = {}) {
+  await ensure();
+  let log = tabs.getNetworkLog();
+  if (urlPattern) log = log.filter((e) => e.url.includes(urlPattern));
+  log = log.slice(-limit);
+  if (clear) tabs.clearNetworkLog();
+  return { text: renderNetwork(log) };
+}
+
+// Response bodies for XHR/fetch calls are the useful part (JSON API shapes).
+// Binary media (audio/video/image/font) is skipped deliberately — this tool is
+// for reading API traffic, not for pulling down the media itself.
+const BINARY_MIME = /^(audio|video|image|font)\//i;
+export async function networkBody(requestId, maxChars = 5000) {
+  await ensure();
+  const entry = tabs.getNetworkLog().find((e) => e.requestId === requestId);
+  if (!entry) throw new Error(`no captured request "${requestId}" — call browser_read_network first to find a requestId`);
+  if (entry.mimeType && BINARY_MIME.test(entry.mimeType)) {
+    return `(skipped: ${entry.mimeType} is binary media — browser_network_body only returns text/JSON API responses)`;
+  }
+  const { body, base64Encoded } = await tabs.getResponseBody(requestId);
+  if (base64Encoded) return `(binary response, base64-encoded, ${body.length} chars — not decoded)`;
+  let s = body || "";
   if (s.length > maxChars) s = s.slice(0, maxChars) + `\n…(truncated, ${s.length - maxChars} more chars)`;
   return s;
 }
