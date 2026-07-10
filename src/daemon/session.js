@@ -195,7 +195,14 @@ async function typeVerified(match, text, submit, fallback) {
     // redacted, non-empty value as proof the type landed, else we pointlessly
     // retype the credential and falsely warn "typed text not reflected".
     const redacted = v === "«redacted»";
-    const ok = submit ? fpOf(snap.model) !== before : (redacted || (v.length > 0 && norm(text).includes(v)));
+    // A contenteditable composer (X's reply/compose box, many rich editors) has
+    // NO .value — it's a div, not an <input> — so the value-prefix check always
+    // fails and triggers a needless second full type (clear + retype), which the
+    // user sees as "write, delete, write again" and doubles slow typing. Typing
+    // ALWAYS changes the page (the send button enables, a char counter appears),
+    // so a fingerprint change is a reliable "it landed" signal for those fields.
+    const changed = fpOf(snap.model) !== before;
+    const ok = submit ? changed : (redacted || changed || (v.length > 0 && norm(text).includes(v)));
     if (ok) return { text: snap.text + (attempt > 1 ? "\n(verified after retry)" : "") };
     if (attempt < 2) await sleep(350);
   }

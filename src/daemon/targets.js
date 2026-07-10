@@ -47,9 +47,12 @@ function attachNetworkLog(client, targetId) {
   });
   // Clear on a top-level navigation, like devtools' network panel without
   // "preserve log" — otherwise calls from the previous page linger and confuse
-  // "what does THIS page call".
+  // "what does THIS page call". Truncate IN PLACE (not networkLogs.set(id, []))
+  // — the requestWillBeSent/etc listeners above close over this exact `log`
+  // array; replacing the map entry would leave them writing into an orphaned
+  // array that getNetworkLog() (which reads the map) never sees again.
   client.Page.frameNavigated(({ frame }) => {
-    if (!frame.parentId) networkLogs.set(targetId, []);
+    if (!frame.parentId) log.length = 0;
   });
 }
 
@@ -160,7 +163,10 @@ export function getNetworkLog(targetId) {
 }
 
 export function clearNetworkLog(targetId) {
-  networkLogs.set(targetId || activeId, []);
+  // Truncate in place — see the comment in attachNetworkLog's frameNavigated
+  // handler for why networkLogs.set(id, []) would orphan the listeners' array.
+  const log = networkLogs.get(targetId || activeId);
+  if (log) log.length = 0;
 }
 
 export async function getResponseBody(requestId, targetId) {
