@@ -8,10 +8,46 @@
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import net from "node:net";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import CDP from "chrome-remote-interface";
 
-const CHROME_BIN = process.env.CHROME_BIN || "/usr/bin/google-chrome-stable";
 const DEBUG_PORT = Number(process.env.CDP_PORT || 9222);
+
+// Per-OS Chrome/Chromium locations, checked in order. CHROME_BIN always wins.
+const CHROME_CANDIDATES = {
+  darwin: [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    path.join(os.homedir(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  ],
+  linux: [
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+  ],
+  win32: [
+    (process.env["PROGRAMFILES"] || "C:\\Program Files") + "\\Google\\Chrome\\Application\\chrome.exe",
+    (process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)") + "\\Google\\Chrome\\Application\\chrome.exe",
+    process.env.LOCALAPPDATA ? process.env.LOCALAPPDATA + "\\Google\\Chrome\\Application\\chrome.exe" : null,
+  ],
+};
+
+// Resolved lazily inside launchChrome(), NOT at module load: attaching to an
+// already-running Chrome on :9222 must work on a machine where we can't find
+// (or don't have) a local binary.
+export function findChrome() {
+  if (process.env.CHROME_BIN) return process.env.CHROME_BIN;
+  const candidates = (CHROME_CANDIDATES[process.platform] || CHROME_CANDIDATES.linux).filter(Boolean);
+  for (const p of candidates) if (fs.existsSync(p)) return p;
+  throw new Error(
+    `no Chrome/Chromium binary found for ${process.platform} — set CHROME_BIN. Tried:\n  ` + candidates.join("\n  ")
+  );
+}
 
 function portOpen(port) {
   return new Promise((resolve) => {
@@ -30,7 +66,8 @@ export async function launchChrome() {
     console.error(`[chrome] reusing existing instance on :${DEBUG_PORT}`);
     return null;
   }
-  const profileDir = process.env.CHROME_PROFILE || "/tmp/calude-chrome-profile";
+  const chromeBin = findChrome();
+  const profileDir = process.env.CHROME_PROFILE || path.join(os.tmpdir(), "calude-chrome-profile");
   const args = [
     `--remote-debugging-port=${DEBUG_PORT}`,
     `--user-data-dir=${profileDir}`,
@@ -39,8 +76,8 @@ export async function launchChrome() {
     "--disable-features=Translate",
     "about:blank",
   ];
-  console.error(`[chrome] launching ${CHROME_BIN} on :${DEBUG_PORT}`);
-  const proc = spawn(CHROME_BIN, args, { stdio: "ignore", detached: false });
+  console.error(`[chrome] launching ${chromeBin} on :${DEBUG_PORT}`);
+  const proc = spawn(chromeBin, args, { stdio: "ignore", detached: false });
 
   for (let i = 0; i < 40; i++) {
     if (await portOpen(DEBUG_PORT)) break;

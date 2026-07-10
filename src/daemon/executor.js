@@ -148,11 +148,17 @@ export async function ensureInView(client, model, el) {
 
 // Clear the currently-focused field (select-all + delete). Used before typing
 // so a (re)type REPLACES rather than appends — fixes garble on verify-retry.
+//
+// Select-all is Cmd+A on macOS, Ctrl+A everywhere else. Chrome interprets the
+// shortcut per the OS IT runs on — normally this process's OS — and with the
+// wrong modifier the select-all is a no-op, so every type APPENDS. (CDP
+// modifiers bitmask: Alt=1, Ctrl=2, Meta/Cmd=4, Shift=8.)
+const SELECT_ALL_MOD = process.platform === "darwin" ? 4 : 2;
 export async function clearField(client) {
   const { Input } = client;
   const a = { key: "a", code: "KeyA", windowsVirtualKeyCode: 65 };
-  await Input.dispatchKeyEvent({ type: "keyDown", modifiers: 2, ...a }); // modifiers:2 = Ctrl
-  await Input.dispatchKeyEvent({ type: "keyUp", modifiers: 2, ...a });
+  await Input.dispatchKeyEvent({ type: "keyDown", modifiers: SELECT_ALL_MOD, ...a });
+  await Input.dispatchKeyEvent({ type: "keyUp", modifiers: SELECT_ALL_MOD, ...a });
   const del = { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 };
   await Input.dispatchKeyEvent({ type: "keyDown", ...del });
   await Input.dispatchKeyEvent({ type: "keyUp", ...del });

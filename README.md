@@ -80,7 +80,13 @@ export ANTHROPIC_API_KEY=sk-ant-...
 node src/cli.js "search for the latest Claude model and open the first result"
 ```
 
-Env: `CHROME_BIN`, `CDP_PORT` (9222), `CHROME_PROFILE`, `CALUDE_MODEL`.
+Env: `CHROME_BIN` (else auto-detected per OS — Linux/macOS/Windows candidate
+paths), `CDP_PORT` (9222), `CHROME_PROFILE` (default: `calude-chrome-profile`
+under the OS temp dir), `CALUDE_MODEL`.
+
+Platform-agnostic: Chrome discovery, the temp profile path, and keyboard
+shortcuts (select-all is Cmd+A on macOS, Ctrl+A elsewhere) all key off
+`process.platform`.
 
 ## Flow cache (record once, replay forever)
 
