@@ -94,6 +94,23 @@ model.
 
 ## Key behaviors & gotchas (learned the hard way)
 - **Read before you act, re-read after.** Stale indexes are the #1 source of wrong clicks.
+  An index is only valid against the model from the *most recent* read. Never carry an
+  index across a navigate, a scroll, or any DOM change — resolve it again from a fresh read.
+- **Never act on an `[inert]` element.** When a modal is open, everything behind it is
+  emitted with normal indexes but tagged `[inert]`. Clicking or typing there is a silent
+  no-op, or worse lands in a lookalike control that shares the foreground element's
+  accessible name (e.g. a background composer named the same as the one in the dialog).
+  `browser_click`/`browser_type` refuse inert targets and name the correct index instead —
+  act on the control *inside* the dialog.
+- **A navigate is settled, but a read on a fresh SPA route may not be.** `browser_navigate`
+  waits for the page to stop changing before returning. If you open a route another way
+  (a click that mounts a dialog/panel), give it a beat and re-read until the element count
+  looks right — SPAs paint a skeleton (a title + a few elements) that briefly looks stable.
+- **Credential fields and secret-bearing URLs are redacted** in the model (`«redacted»`,
+  `data:«inline»`). This is deliberate: browsers autofill saved passwords, so a naive read
+  of a login page would otherwise leak them into the transcript. The model still shows the
+  field is filled; you just can't read the value. Do not try to route around it — if a task
+  needs a credential typed, that's a stop-and-ask-the-user moment, not an automation step.
 - **Long pages / dialogs:** when a modal is open its controls are surfaced first; the
   model is capped (default 400 elements, `CALUDE_MAX_ELEMENTS`) and reports truncation.
 - **Off-model controls:** if a checkbox/button isn't in the model, screenshot it and use
@@ -105,10 +122,24 @@ model.
   heuristics block the automated browser by design (we've seen F6S pause, SaaSHub
   captcha, Google-signup-disabled). Do **not** try to brute-force these — tell the user
   to do the sign-up in their normal browser, then drive the authenticated session.
-- **Logins:** the copilot uses the user's real Chrome profile/session. If a page redirects
-  to a login, ask the user to log in (the Chrome window is on their screen), then continue.
+- **Logins & security walls are a HARD STOP.** The copilot uses the user's real Chrome
+  session. If a page redirects to a login, shows a captcha, or throws an unusual-activity
+  interstitial, stop and hand back to the user — never type credentials or automate through
+  a security check.
 - **Dropped connection self-heals:** if Chrome closes, the next action relaunches/
   re-attaches automatically (a fresh launch loses logins, though).
+
+### If you drive it from a script instead of the MCP tools
+The verbs above are the supported surface. If you wrap the server in your own long-lived
+session (one process, many calls), three things bite:
+- **One session per task, not one process per call.** Spawning a fresh server per call
+  re-attaches Chrome and drifts onto stray `about:blank` targets. Keep one session open.
+- **Bound every call and kill the child on exit.** A hung CDP call otherwise wedges the
+  run, and a killed parent leaves an orphaned node process attached to Chrome (they
+  accumulate and contend, turning fast calls into 30s+ stalls). Use a per-call timeout and
+  a SIGTERM/atexit hard-kill of the child.
+- **Parse to compact structure, don't hoard raw models.** A read is 5–15k chars; keep only
+  the fields you need (role, name, index) so your own context doesn't balloon over a sweep.
 
 ## When to use it — and when not
 **Great fit (use it):** logged-in dashboards and admin panels (analytics, ad/SEO
