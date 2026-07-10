@@ -61,6 +61,24 @@ function PAGE_EXTRACTOR(maxElements) {
     return true;
   }
 
+  // NEVER emit the contents of a credential field. Browsers autofill saved
+  // passwords, so a plain read of a login page would otherwise leak the
+  // password verbatim into the model, the transcript, and any logs. The model
+  // still needs to KNOW the field is filled (to decide whether to type), so we
+  // report a placeholder instead of the value.
+  const SENSITIVE_NAME = /pass|pwd|otp|mfa|2fa|totp|cvv|cvc|card|iban|ssn|secret|token|api[-_ ]?key/i;
+  function redactedValue(el) {
+    const type = (el.getAttribute && el.getAttribute("type") || "").toLowerCase();
+    const hay = [type, el.name, el.id, el.getAttribute && el.getAttribute("autocomplete"),
+                 el.getAttribute && el.getAttribute("aria-label"), el.placeholder]
+      .filter(Boolean).join(" ");
+    const sensitive = type === "password" || SENSITIVE_NAME.test(hay);
+    const raw = (el.value || "");
+    if (!raw) return undefined;
+    if (sensitive) return "«redacted»";
+    return raw.slice(0, 80) || undefined;
+  }
+
   // The topmost open overlay/dialog (if any). Later-in-DOM wins, which is
   // almost always the most recently opened (and visually frontmost) layer.
   function topOverlay() {
@@ -117,11 +135,16 @@ function PAGE_EXTRACTOR(maxElements) {
       items.push({
         el, role, name,
         type: el.getAttribute("type") || undefined,
-        value: (el.value || "").slice(0, 80) || undefined,
+        value: redactedValue(el),
         x: Math.round(r.x + r.width / 2),
         y: Math.round(r.y + r.height / 2),
         w: Math.round(r.width), h: Math.round(r.height),
         pri: overlay && overlay.contains(el) ? 0 : 1,
+        // Behind an open modal: still painted and hit-testable, but the dialog
+        // swallows input. Acting here silently does nothing (or worse, hits a
+        // lookalike control that shares the foreground element's accessible
+        // name (a background composer behind a compose dialog, say).
+        inert: overlay ? !overlay.contains(el) : false,
       });
     }
   }
@@ -133,6 +156,7 @@ function PAGE_EXTRACTOR(maxElements) {
   const limited = items.slice(0, maxElements);
   const elements = limited.map((it, i) => ({
     i, role: it.role, name: it.name, type: it.type, value: it.value, x: it.x, y: it.y, w: it.w, h: it.h,
+    inert: it.inert || undefined,
   }));
 
   let overlayName = null;
@@ -141,8 +165,25 @@ function PAGE_EXTRACTOR(maxElements) {
       || overlay.querySelector("h1,h2,[role='heading']")?.textContent?.trim()?.slice(0, 80)
       || "dialog";
   }
+  // Query strings and fragments routinely carry one-time tokens, session ids and
+  // API keys (OAuth callbacks, magic links, password-reset links). Emitting the
+  // raw href would put them in the model and the transcript.
+  function safeUrl() {
+    try {
+      const u = new URL(location.href);
+      const SENS = /token|secret|password|passwd|pwd|api[-_]?key|access|auth|session|code|otp|signature|sig/i;
+      let touched = false;
+      for (const k of Array.from(u.searchParams.keys())) {
+        if (SENS.test(k)) { u.searchParams.set(k, "«redacted»"); touched = true; }
+      }
+      if (u.hash && SENS.test(u.hash)) { u.hash = "#«redacted»"; touched = true; }
+      if (u.protocol === "data:") return "data:«inline»";
+      return touched ? u.toString() : location.href;
+    } catch { return location.href; }
+  }
+
   return {
-    url: location.href,
+    url: safeUrl(),
     title: document.title,
     scrollY: Math.round(scrollY),
     scrollMax: document.body ? Math.round(document.body.scrollHeight - innerHeight) : 0,
@@ -174,10 +215,13 @@ export function renderForModel(model) {
     if (e.type) bits.push(`(${e.type})`);
     if (e.name) bits.push(`"${e.name}"`);
     if (e.value) bits.push(`= "${e.value}"`);
+    if (e.inert) bits.push("[inert: behind the dialog — do not act on this]");
     return bits.join(" ");
   });
   const scroll = model.scrollMax > 0 ? ` scroll ${model.scrollY}/${model.scrollMax}` : "";
-  const overlay = model.overlay ? `\nFOCUSED OVERLAY: ${model.overlay} (its controls are listed first)` : "";
+  const overlay = model.overlay
+    ? `\nFOCUSED OVERLAY: ${model.overlay} (its controls are listed first; everything marked [inert] is behind it)`
+    : "";
   const trunc = model.truncated ? `\n… (${model.truncated} more interactable elements not shown — raise CALUDE_MAX_ELEMENTS or scroll)` : "";
   return `URL: ${model.url}\nTITLE: ${model.title}${scroll}${overlay}\nELEMENTS:\n${lines.join("\n")}${trunc}`;
 }

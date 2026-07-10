@@ -44,6 +44,17 @@ export async function read() {
 function findEl(i) {
   const el = model?.elements.find((e) => e.i === i);
   if (!el) throw new Error(`no element [${i}] in the current page model — call browser_read first`);
+  // A modal is open and this element is behind it. Clicking/typing here is a
+  // silent no-op at best, and at worst lands in a lookalike control behind the
+  // dialog that shares its accessible name (e.g. two `textbox "Post text"`).
+  if (el.inert) {
+    const alt = model.elements.find((e) => !e.inert && e.role === el.role && e.name === el.name);
+    throw new Error(
+      `element [${i}] "${el.name}" is INERT — it sits behind the open ${model.overlay || "dialog"}.`
+      + (alt ? ` Use [${alt.i}] instead (same role/name, inside the dialog).`
+             : ` Act on a control inside the dialog, or close it first.`)
+    );
+  }
   return el;
 }
 
@@ -78,10 +89,52 @@ function fpOf(m) {
   return `${m.url}|${m.title}|` + m.elements.map((e) => `${e.role}:${e.name}:${e.value || ""}`).join(";");
 }
 
+// Wait until the page stops changing, instead of guessing a fixed delay.
+// The load event fires when the document is done, but SPA routes keep mounting
+// afterwards (a route that mounts a dialog well after load). Reading too
+// early yields a half-built model whose indexes are garbage against the settled
+// page — the caller then types into whatever now occupies that index.
+//
+// Settled = TWO consecutive identical fingerprints (3 matching samples) with a
+// non-empty title. One match is not enough: SPAs paint a skeleton that sits
+// still for a beat (some apps render a title and a few elements before hydrating),
+// and a single stable pair accepts that skeleton. A nearly-empty model is the
+// tell, so an element count below MIN_RICH also has to outlast a grace period
+// before we believe it. Bounded; returns whatever it has when the budget ends.
+const MIN_RICH = 5;
+const SPARSE_GRACE_MS = 2500;
+async function settle(maxMs = 10000, quietMs = 300) {
+  const t0 = Date.now();
+  let prev = null;
+  let stable = 0;
+  while (Date.now() - t0 < maxMs) {
+    let snap;
+    try { snap = await perceive(C()); } catch { await sleep(quietMs); continue; }
+    const fp = fpOf(snap);
+    stable = prev !== null && fp === prev ? stable + 1 : 0;
+    prev = fp;
+    // A rich, stable model IS a loaded page — some apps leave document.title
+    // empty long after hydration, so requiring a title burned the
+    // full timeout on pages that were already done. Title only matters as
+    // corroboration when the model is sparse.
+    const rich = (snap.elements?.length || 0) >= MIN_RICH;
+    if (stable >= 2 && (rich || (snap.title && Date.now() - t0 >= SPARSE_GRACE_MS))) return true;
+    await sleep(quietMs);
+  }
+  return false;
+}
+
 async function navigateRaw(url) {
   await C().Page.navigate({ url });
-  await C().Page.loadEventFired().catch(() => {});
-  await sleep(900);
+  // loadEventFired NEVER resolves when Chrome is already on this URL or the SPA
+  // does an in-page route change — and an unresolved promise is not a rejected
+  // one, so .catch() cannot save you. Race it against a deadline; settle() below
+  // is what actually establishes readiness anyway.
+  await Promise.race([
+    C().Page.loadEventFired().catch(() => {}),
+    sleep(2500),
+  ]);
+  await settle();
   return read();
 }
 

@@ -63,8 +63,20 @@ export async function pressEnter(client) {
 }
 
 export async function scrollBy(client, dy) {
-  const { Input } = client;
-  await Input.dispatchMouseEvent({ type: "mouseWheel", x: cursor.x, y: cursor.y, deltaX: 0, deltaY: dy });
+  // Scroll via JS, not a synthetic mouse wheel. dispatchMouseEvent({mouseWheel})
+  // can hang for tens of seconds when the cursor sits over an autoplaying video
+  // or a wheel-capturing widget (some feeds have both). window.scrollBy is
+  // instant, cursor-independent, and does not wait on scroll-animation frames.
+  // Fall back to the wheel event only if JS eval is somehow unavailable.
+  const { Runtime, Input } = client;
+  try {
+    await Runtime.evaluate({
+      expression: `window.scrollBy({top:${Number(dy) || 0},left:0,behavior:'instant'})`,
+      awaitPromise: false, returnByValue: true,
+    });
+  } catch {
+    await Input.dispatchMouseEvent({ type: "mouseWheel", x: cursor.x, y: cursor.y, deltaX: 0, deltaY: dy });
+  }
 }
 
 // Trusted, humanized drag-and-drop: press at source, glide to target along a
